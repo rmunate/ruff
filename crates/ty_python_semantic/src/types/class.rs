@@ -3105,7 +3105,12 @@ impl<'db> ClassLiteral<'db> {
             // This attribute is neither declared nor bound in the class body.
             // It could still be implicitly defined in a method.
 
-            Self::implicit_attribute(db, body_scope, name, MethodDecorator::None)
+            Self::implicit_attribute(
+                db,
+                body_scope,
+                name,
+                MethodDecorator::None
+            )
         }
     }
 
