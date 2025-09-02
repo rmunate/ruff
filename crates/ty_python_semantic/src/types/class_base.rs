@@ -3,8 +3,9 @@ use crate::types::class::CodeGeneratorKind;
 use crate::types::generics::Specialization;
 use crate::types::tuple::TupleType;
 use crate::types::{
-    ApplyTypeMappingVisitor, ClassLiteral, ClassType, DynamicType, KnownClass, KnownInstanceType,
-    MroError, MroIterator, NormalizedVisitor, SpecialFormType, Type, TypeMapping, todo_type,
+    ApplyTypeMappingVisitor, ClassLiteral, ClassType, DynamicType, GenericAlias, KnownClass,
+    KnownInstanceType, MroError, MroIterator, NormalizedVisitor, SpecialFormType, Type,
+    TypeMapping, todo_type,
 };
 
 /// Enumeration of the possible kinds of types we allow in class bases.
@@ -78,7 +79,14 @@ impl<'db> ClassBase<'db> {
         match ty {
             Type::Dynamic(dynamic) => Some(Self::Dynamic(dynamic)),
             Type::ClassLiteral(literal) => Some(Self::Class(literal.default_specialization(db))),
-            Type::GenericAlias(generic) => Some(Self::Class(ClassType::Generic(generic))),
+
+            Type::GenericAlias(generic) => match generic {
+                GenericAlias::ClassLiteral(generic) => {
+                    Some(Self::Class(ClassType::Generic(generic)))
+                }
+                _ => None,
+            },
+
             Type::NominalInstance(instance)
                 if instance.class(db).is_known(db, KnownClass::GenericAlias) =>
             {

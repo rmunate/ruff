@@ -1,12 +1,9 @@
 from typing import reveal_type
 
-class X[XO]:
-    x: list[XO]
+type T[X] = list[X]
 
-type Y[W] = list[W]
+class X[T]:
+    x: list[T]
 
-def y[YOARG](y: Y[YOARG]):
-    reveal_type(y)
-
-def x[XOARG](x: X[XOARG]):
-    reveal_type(x.x)
+def y(x: X[int]) -> None:
+    reveal_type(x)

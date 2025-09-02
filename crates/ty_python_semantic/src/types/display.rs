@@ -10,14 +10,16 @@ use ruff_text_size::{TextRange, TextSize};
 use crate::Db;
 use crate::module_resolver::file_to_module;
 use crate::semantic_index::{scope::ScopeKind, semantic_index};
-use crate::types::class::{ClassLiteral, ClassType, GenericAlias};
+use crate::types::class::{
+    ClassLiteral, ClassType, GenericAlias, GenericClassAlias, GenericTypeAliasAlias,
+};
 use crate::types::function::{FunctionType, OverloadLiteral};
 use crate::types::generics::{GenericContext, Specialization};
 use crate::types::signatures::{CallableSignature, Parameter, Parameters, Signature};
 use crate::types::tuple::TupleSpec;
 use crate::types::{
-    CallableType, IntersectionType, KnownClass, MethodWrapperKind, Protocol, StringLiteralType,
-    SubclassOfInner, Type, UnionType, WrapperDescriptorKind,
+    CallableType, IntersectionType, KnownClass, MethodWrapperKind, PEP695TypeAliasType, Protocol,
+    StringLiteralType, SubclassOfInner, Type, UnionType, WrapperDescriptorKind,
 };
 use ruff_db::parsed::parsed_module;
 
@@ -235,9 +237,14 @@ impl Display for DisplayRepresentation<'_> {
                 self.write_maybe_qualified_class(f, class)?;
                 write!(f, "'>")
             }
-            Type::GenericAlias(generic) => write!(
+            Type::GenericAlias(GenericAlias::ClassLiteral(generic)) => write!(
                 f,
                 "<class '{}'>",
+                generic.display_with(self.db, self.settings.singleline())
+            ),
+            Type::GenericAlias(GenericAlias::TypeAlias(generic)) => write!(
+                f,
+                "{}",
                 generic.display_with(self.db, self.settings.singleline())
             ),
             Type::SubclassOf(subclass_of_ty) => match subclass_of_ty.subclass_of() {
@@ -587,13 +594,13 @@ impl Display for DisplayFunctionType<'_> {
     }
 }
 
-impl<'db> GenericAlias<'db> {
+impl<'db> GenericClassAlias<'db> {
     pub(crate) fn display_with(
         &'db self,
         db: &'db dyn Db,
         settings: DisplaySettings,
-    ) -> DisplayGenericAlias<'db> {
-        DisplayGenericAlias {
+    ) -> DisplayGenericClassAlias<'db> {
+        DisplayGenericClassAlias {
             origin: self.origin(db),
             specialization: self.specialization(db),
             db,
@@ -602,14 +609,14 @@ impl<'db> GenericAlias<'db> {
     }
 }
 
-pub(crate) struct DisplayGenericAlias<'db> {
+pub(crate) struct DisplayGenericClassAlias<'db> {
     origin: ClassLiteral<'db>,
     specialization: Specialization<'db>,
     db: &'db dyn Db,
     settings: DisplaySettings,
 }
 
-impl Display for DisplayGenericAlias<'_> {
+impl Display for DisplayGenericClassAlias<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         if let Some(tuple) = self.specialization.tuple(self.db) {
             tuple.display_with(self.db, self.settings).fmt(f)
@@ -624,6 +631,41 @@ impl Display for DisplayGenericAlias<'_> {
                 ),
             )
         }
+    }
+}
+
+impl<'db> GenericTypeAliasAlias<'db> {
+    pub(crate) fn display_with(
+        &'db self,
+        db: &'db dyn Db,
+        settings: DisplaySettings,
+    ) -> DisplayGenericTypeAliasAlias<'db> {
+        DisplayGenericTypeAliasAlias {
+            origin: self.origin(db),
+            specialization: self.specialization(db),
+            db,
+            settings,
+        }
+    }
+}
+
+pub(crate) struct DisplayGenericTypeAliasAlias<'db> {
+    origin: PEP695TypeAliasType<'db>,
+    specialization: Specialization<'db>,
+    db: &'db dyn Db,
+    settings: DisplaySettings,
+}
+
+impl Display for DisplayGenericTypeAliasAlias<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{origin}{specialization}",
+            origin = self.origin.name(self.db),
+            specialization = self
+                .specialization
+                .display_short(self.db, TupleSpecialization::No),
+        )
     }
 }
 

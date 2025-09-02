@@ -126,9 +126,9 @@ use crate::types::typed_dict::{
 use crate::types::unpacker::{UnpackResult, Unpacker};
 use crate::types::{
     CallDunderError, CallableType, ClassLiteral, ClassType, DataclassParams, DynamicType,
-    IntersectionBuilder, IntersectionType, KnownClass, KnownInstanceType, LintDiagnosticGuard,
-    MemberLookupPolicy, MetaclassCandidate, PEP695TypeAliasType, Parameter, ParameterForm,
-    Parameters, SpecialFormType, SubclassOfType, Truthiness, Type, TypeAliasType,
+    GenericAlias, IntersectionBuilder, IntersectionType, KnownClass, KnownInstanceType,
+    LintDiagnosticGuard, MemberLookupPolicy, MetaclassCandidate, PEP695TypeAliasType, Parameter,
+    ParameterForm, Parameters, SpecialFormType, SubclassOfType, Truthiness, Type, TypeAliasType,
     TypeAndQualifiers, TypeIsType, TypeQualifiers, TypeVarBoundOrConstraintsEvaluation,
     TypeVarDefaultEvaluation, TypeVarInstance, TypeVarKind, UnionBuilder, UnionType, binding_type,
     todo_type,
@@ -1207,7 +1207,9 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                         continue;
                     }
                     Type::ClassLiteral(class) => ClassType::NonGeneric(*class),
-                    Type::GenericAlias(class) => ClassType::Generic(*class),
+                    Type::GenericAlias(GenericAlias::ClassLiteral(class)) => {
+                        ClassType::Generic(*class)
+                    }
                     _ => continue,
                 };
 
@@ -3173,7 +3175,6 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 self.db(),
                 &type_alias.name.as_name_expr().unwrap().id,
                 rhs_scope,
-                None,
             )),
         ));
 
@@ -6235,7 +6236,9 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
 
         let class = match callable_type {
             Type::ClassLiteral(class) => Some(ClassType::NonGeneric(class)),
-            Type::GenericAlias(generic) => Some(ClassType::Generic(generic)),
+            Type::GenericAlias(GenericAlias::ClassLiteral(generic)) => {
+                Some(ClassType::Generic(generic))
+            }
             Type::SubclassOf(subclass) => subclass.subclass_of().into_class(),
             _ => None,
         };
@@ -8758,9 +8761,9 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
     ) -> Type<'db> {
         let db = self.db();
         let specialize = |types: &[Option<Type<'db>>]| {
-            Type::TypeAlias(generic_type_alias.apply_specialization(db, |_| {
+            generic_type_alias.apply_specialization(db, |_| {
                 generic_context.specialize_partial(db, types.iter().copied())
-            }))
+            })
         };
 
         return self.infer_explicit_callable_specialization(

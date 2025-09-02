@@ -12,7 +12,9 @@ use crate::semantic_index::{
 };
 use crate::types::call::{CallArguments, MatchedArgument};
 use crate::types::signatures::Signature;
-use crate::types::{ClassBase, ClassLiteral, DynamicType, KnownClass, KnownInstanceType, Type};
+use crate::types::{
+    ClassBase, ClassLiteral, DynamicType, GenericAlias, KnownClass, KnownInstanceType, Type,
+};
 use crate::{Db, HasType, NameKind, SemanticModel};
 use ruff_db::files::{File, FileRange};
 use ruff_db::parsed::parsed_module;
@@ -103,7 +105,9 @@ impl<'db> AllMembers<'db> {
                 self.extend_with_type(db, KnownClass::TypedDictFallback.to_class_literal(db));
             }
 
-            Type::GenericAlias(generic_alias) if generic_alias.is_typed_dict(db) => {
+            Type::GenericAlias(GenericAlias::ClassLiteral(generic_alias))
+                if generic_alias.is_typed_dict(db) =>
+            {
                 self.extend_with_type(db, KnownClass::TypedDictFallback.to_class_literal(db));
             }
 
@@ -119,7 +123,7 @@ impl<'db> AllMembers<'db> {
                 }
             }
 
-            Type::GenericAlias(generic_alias) => {
+            Type::GenericAlias(GenericAlias::ClassLiteral(generic_alias)) => {
                 let class_literal = generic_alias.origin(db);
                 self.extend_with_class_members(db, ty, class_literal);
             }
@@ -133,6 +137,9 @@ impl<'db> AllMembers<'db> {
             Type::Dynamic(_) | Type::Never | Type::AlwaysTruthy | Type::AlwaysFalsy => {}
 
             Type::TypeAlias(alias) => self.extend_with_type(db, alias.value_type(db)),
+            Type::GenericAlias(GenericAlias::TypeAlias(alias)) => {
+                self.extend_with_type(db, alias.value_type(db))
+            }
 
             Type::IntLiteral(_)
             | Type::BooleanLiteral(_)
@@ -163,7 +170,7 @@ impl<'db> AllMembers<'db> {
                         self.extend_with_class_members(db, ty, class.class_literal(db).0);
                     }
                 }
-                Type::GenericAlias(generic_alias) => {
+                Type::GenericAlias(GenericAlias::ClassLiteral(generic_alias)) => {
                     let class_literal = generic_alias.origin(db);
                     self.extend_with_class_members(db, ty, class_literal);
                 }

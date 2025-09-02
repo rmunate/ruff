@@ -18,7 +18,8 @@ use crate::types::string_annotation::{
     RAW_STRING_TYPE_ANNOTATION,
 };
 use crate::types::{
-    DynamicType, LintDiagnosticGuard, Protocol, ProtocolInstanceType, SubclassOfInner, binding_type,
+    DynamicType, GenericAlias, LintDiagnosticGuard, Protocol, ProtocolInstanceType,
+    SubclassOfInner, binding_type,
 };
 use crate::types::{SpecialFormType, Type, protocol_class::ProtocolClass};
 use crate::util::diagnostics::format_enumeration;
@@ -1981,7 +1982,7 @@ fn type_to_class_literal<'db>(ty: Type<'db>, db: &'db dyn crate::Db) -> Option<C
             crate::types::class::ClassType::Generic(alias) => Some(alias.origin(db)),
         },
         Type::EnumLiteral(enum_literal) => Some(enum_literal.enum_class(db)),
-        Type::GenericAlias(alias) => Some(alias.origin(db)),
+        Type::GenericAlias(GenericAlias::ClassLiteral(alias)) => Some(alias.origin(db)),
         Type::ProtocolInstance(ProtocolInstanceType {
             inner: Protocol::FromClass(class),
             ..

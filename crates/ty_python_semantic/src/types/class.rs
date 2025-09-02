@@ -31,10 +31,10 @@ use crate::types::typed_dict::typed_dict_params_from_class_def;
 use crate::types::{
     ApplyTypeMappingVisitor, Binding, BoundSuperError, BoundSuperType, CallableType,
     DataclassParams, DeprecatedInstance, HasRelationToVisitor, IsEquivalentVisitor,
-    KnownInstanceType, ManualPEP695TypeAliasType, NormalizedVisitor, PropertyInstanceType,
-    StringLiteralType, TypeAliasType, TypeMapping, TypeRelation, TypeVarBoundOrConstraints,
-    TypeVarInstance, TypeVarKind, TypedDictParams, VarianceInferable, declaration_type,
-    infer_definition_types, todo_type,
+    KnownInstanceType, ManualPEP695TypeAliasType, NormalizedVisitor, PEP695TypeAliasType,
+    PropertyInstanceType, StringLiteralType, TypeAliasType, TypeMapping, TypeRelation,
+    TypeVarBoundOrConstraints, TypeVarInstance, TypeVarKind, TypedDictParams, VarianceInferable,
+    declaration_type, infer_definition_types, todo_type,
 };
 use crate::{
     Db, FxIndexMap, FxOrderSet, Program,
@@ -245,11 +245,22 @@ impl CodeGeneratorKind {
 /// # Ordering
 /// Ordering is based on the generic aliases's salsa-assigned id and not on its values.
 /// The id may change between runs, or when the alias was garbage collected and recreated.
-#[salsa::interned(debug, heap_size=ruff_memory_usage::heap_size)]
-#[derive(PartialOrd, Ord)]
-pub struct GenericAlias<'db> {
-    pub(crate) origin: ClassLiteral<'db>,
-    pub(crate) specialization: Specialization<'db>,
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    salsa::Supertype,
+    salsa::Update,
+    get_size2::GetSize,
+)]
+pub enum GenericAlias<'db> {
+    ClassLiteral(GenericClassAlias<'db>),
+    TypeAlias(GenericTypeAliasAlias<'db>),
 }
 
 pub(super) fn walk_generic_alias<'db, V: super::visitor::TypeVisitor<'db> + ?Sized>(
@@ -260,10 +271,116 @@ pub(super) fn walk_generic_alias<'db, V: super::visitor::TypeVisitor<'db> + ?Siz
     walk_specialization(db, alias.specialization(db), visitor);
 }
 
-// The Salsa heap is tracked separately.
-impl get_size2::GetSize for GenericAlias<'_> {}
-
 impl<'db> GenericAlias<'db> {
+    pub(crate) fn specialization(self, db: &'db dyn Db) -> Specialization<'db> {
+        match self {
+            GenericAlias::ClassLiteral(alias) => alias.specialization(db),
+            GenericAlias::TypeAlias(alias) => alias.specialization(db),
+        }
+    }
+
+    pub(crate) fn as_generic_class_alias(self) -> Option<GenericClassAlias<'db>> {
+        match self {
+            GenericAlias::ClassLiteral(alias) => Some(alias),
+            _ => None,
+        }
+    }
+
+    pub(super) fn normalized_impl(self, db: &'db dyn Db, visitor: &NormalizedVisitor<'db>) -> Self {
+        match self {
+            GenericAlias::ClassLiteral(alias) => {
+                GenericAlias::ClassLiteral(GenericClassAlias::new(
+                    db,
+                    alias.origin(db),
+                    alias.specialization(db).normalized_impl(db, visitor),
+                ))
+            }
+            GenericAlias::TypeAlias(alias) => GenericAlias::TypeAlias(GenericTypeAliasAlias::new(
+                db,
+                alias.origin(db),
+                alias.specialization(db).normalized_impl(db, visitor),
+            )),
+        }
+    }
+
+    pub(super) fn materialize(self, db: &'db dyn Db, variance: TypeVarVariance) -> Self {
+        match self {
+            GenericAlias::ClassLiteral(alias) => {
+                GenericAlias::ClassLiteral(GenericClassAlias::new(
+                    db,
+                    alias.origin(db),
+                    alias.specialization(db).materialize(db, variance),
+                ))
+            }
+            GenericAlias::TypeAlias(alias) => GenericAlias::TypeAlias(GenericTypeAliasAlias::new(
+                db,
+                alias.origin(db),
+                alias.specialization(db).materialize(db, variance),
+            )),
+        }
+    }
+
+    pub(crate) fn definition(self, db: &'db dyn Db) -> Definition<'db> {
+        match self {
+            GenericAlias::ClassLiteral(alias) => alias.origin(db).definition(db),
+            GenericAlias::TypeAlias(alias) => alias.origin(db).definition(db),
+        }
+    }
+
+    pub(super) fn apply_type_mapping_impl<'a>(
+        self,
+        db: &'db dyn Db,
+        type_mapping: &TypeMapping<'a, 'db>,
+        visitor: &ApplyTypeMappingVisitor<'db>,
+    ) -> Self {
+        match self {
+            GenericAlias::ClassLiteral(alias) => {
+                GenericAlias::ClassLiteral(GenericClassAlias::new(
+                    db,
+                    alias.origin(db),
+                    alias
+                        .specialization(db)
+                        .apply_type_mapping_impl(db, type_mapping, visitor),
+                ))
+            }
+            GenericAlias::TypeAlias(alias) => GenericAlias::TypeAlias(GenericTypeAliasAlias::new(
+                db,
+                alias.origin(db),
+                alias
+                    .specialization(db)
+                    .apply_type_mapping_impl(db, type_mapping, visitor),
+            )),
+        }
+    }
+
+    pub(super) fn find_legacy_typevars(
+        self,
+        db: &'db dyn Db,
+        binding_context: Option<Definition<'db>>,
+        typevars: &mut FxOrderSet<BoundTypeVarInstance<'db>>,
+    ) {
+        self.specialization(db)
+            .find_legacy_typevars(db, binding_context, typevars);
+    }
+}
+
+impl<'db> From<GenericAlias<'db>> for Type<'db> {
+    fn from(alias: GenericAlias<'db>) -> Type<'db> {
+        Type::GenericAlias(alias)
+    }
+}
+
+#[salsa::interned(debug, heap_size=ruff_memory_usage::heap_size)]
+#[derive(PartialOrd, Ord)]
+pub struct GenericClassAlias<'db> {
+    pub(crate) origin: ClassLiteral<'db>,
+    pub(crate) specialization: Specialization<'db>,
+}
+
+// The Salsa heap is tracked separately.
+impl get_size2::GetSize for GenericClassAlias<'_> {}
+
+impl<'db> GenericClassAlias<'db> {
     pub(super) fn normalized_impl(self, db: &'db dyn Db, visitor: &NormalizedVisitor<'db>) -> Self {
         Self::new(
             db,
@@ -313,14 +430,8 @@ impl<'db> GenericAlias<'db> {
     }
 }
 
-impl<'db> From<GenericAlias<'db>> for Type<'db> {
-    fn from(alias: GenericAlias<'db>) -> Type<'db> {
-        Type::GenericAlias(alias)
-    }
-}
-
 #[salsa::tracked]
-impl<'db> VarianceInferable<'db> for GenericAlias<'db> {
+impl<'db> VarianceInferable<'db> for GenericClassAlias<'db> {
     #[salsa::tracked]
     fn variance_of(self, db: &'db dyn Db, typevar: BoundTypeVarInstance<'db>) -> TypeVarVariance {
         let origin = self.origin(db);
@@ -364,6 +475,24 @@ impl<'db> VarianceInferable<'db> for GenericAlias<'db> {
     }
 }
 
+#[salsa::interned(debug, heap_size=ruff_memory_usage::heap_size)]
+#[derive(PartialOrd, Ord)]
+pub struct GenericTypeAliasAlias<'db> {
+    pub(crate) origin: PEP695TypeAliasType<'db>,
+    pub(crate) specialization: Specialization<'db>,
+}
+
+impl<'db> GenericTypeAliasAlias<'db> {
+    pub(crate) fn value_type(&self, db: &'db dyn Db) -> Type<'db> {
+        self.origin(db)
+            .value_type(db)
+            .apply_specialization(db, self.specialization(db))
+    }
+}
+
+// The Salsa heap is tracked separately.
+impl get_size2::GetSize for GenericTypeAliasAlias<'_> {}
+
 /// Represents a class type, which might be a non-generic class, or a specialization of a generic
 /// class.
 #[derive(
@@ -381,7 +510,7 @@ impl<'db> VarianceInferable<'db> for GenericAlias<'db> {
 )]
 pub enum ClassType<'db> {
     NonGeneric(ClassLiteral<'db>),
-    Generic(GenericAlias<'db>),
+    Generic(GenericClassAlias<'db>),
 }
 
 #[salsa::tracked]
@@ -390,7 +519,7 @@ impl<'db> ClassType<'db> {
         matches!(self, Self::NonGeneric(_))
     }
 
-    pub(super) const fn into_generic_alias(self) -> Option<GenericAlias<'db>> {
+    pub(super) const fn into_generic_class_alias(self) -> Option<GenericClassAlias<'db>> {
         match self {
             Self::NonGeneric(_) => None,
             Self::Generic(generic) => Some(generic),
@@ -1208,8 +1337,8 @@ impl<'db> ClassType<'db> {
     }
 }
 
-impl<'db> From<GenericAlias<'db>> for ClassType<'db> {
-    fn from(generic: GenericAlias<'db>) -> ClassType<'db> {
+impl<'db> From<GenericClassAlias<'db>> for ClassType<'db> {
+    fn from(generic: GenericClassAlias<'db>) -> ClassType<'db> {
         ClassType::Generic(generic)
     }
 }
@@ -1218,7 +1347,7 @@ impl<'db> From<ClassType<'db>> for Type<'db> {
     fn from(class: ClassType<'db>) -> Type<'db> {
         match class {
             ClassType::NonGeneric(non_generic) => non_generic.into(),
-            ClassType::Generic(generic) => generic.into(),
+            ClassType::Generic(generic) => GenericAlias::ClassLiteral(generic).into(),
         }
     }
 }
@@ -1425,7 +1554,7 @@ impl<'db> ClassLiteral<'db> {
             self.explicit_bases(db)
                 .iter()
                 .copied()
-                .filter(|ty| matches!(ty, Type::GenericAlias(_))),
+                .filter(|ty| matches!(ty, Type::GenericAlias(GenericAlias::ClassLiteral(_)))),
         )
     }
 
@@ -1459,7 +1588,7 @@ impl<'db> ClassLiteral<'db> {
             None => ClassType::NonGeneric(self),
             Some(generic_context) => {
                 let specialization = f(generic_context);
-                ClassType::Generic(GenericAlias::new(db, self, specialization))
+                ClassType::Generic(GenericClassAlias::new(db, self, specialization))
             }
         }
     }
@@ -3105,12 +3234,7 @@ impl<'db> ClassLiteral<'db> {
             // This attribute is neither declared nor bound in the class body.
             // It could still be implicitly defined in a method.
 
-            Self::implicit_attribute(
-                db,
-                body_scope,
-                name,
-                MethodDecorator::None
-            )
+            Self::implicit_attribute(db, body_scope, name, MethodDecorator::None)
         }
     }
 
@@ -3137,7 +3261,9 @@ impl<'db> ClassLiteral<'db> {
             for explicit_base in class.explicit_bases(db) {
                 let explicit_base_class_literal = match explicit_base {
                     Type::ClassLiteral(class_literal) => *class_literal,
-                    Type::GenericAlias(generic_alias) => generic_alias.origin(db),
+                    Type::GenericAlias(GenericAlias::ClassLiteral(generic_alias)) => {
+                        generic_alias.origin(db)
+                    }
                     _ => continue,
                 };
                 if !classes_on_stack.insert(explicit_base_class_literal) {

@@ -37,6 +37,7 @@ use crate::semantic_index::scope::ScopeId;
 use crate::semantic_index::{imported_modules, place_table, semantic_index};
 use crate::suppression::check_suppressions;
 use crate::types::call::{Binding, Bindings, CallArguments, CallableBinding};
+use crate::types::class::GenericTypeAliasAlias;
 pub(crate) use crate::types::class_base::ClassBase;
 use crate::types::constraints::{
     Constraints, IteratorConstraintsExtension, OptionConstraintsExtension,
@@ -955,7 +956,9 @@ impl<'db> Type<'db> {
     pub(crate) fn to_class_type(self, db: &'db dyn Db) -> Option<ClassType<'db>> {
         match self {
             Type::ClassLiteral(class_literal) => Some(class_literal.default_specialization(db)),
-            Type::GenericAlias(alias) => Some(ClassType::Generic(alias)),
+            Type::GenericAlias(GenericAlias::ClassLiteral(alias)) => {
+                Some(ClassType::Generic(alias))
+            }
             _ => None,
         }
     }
@@ -1256,7 +1259,9 @@ impl<'db> Type<'db> {
                 Some(ClassType::NonGeneric(class_literal).into_callable(db))
             }
 
-            Type::GenericAlias(alias) => Some(ClassType::Generic(alias).into_callable(db)),
+            Type::GenericAlias(GenericAlias::ClassLiteral(alias)) => {
+                Some(ClassType::Generic(alias).into_callable(db))
+            }
 
             // TODO: This is unsound so in future we can consider an opt-in option to disable it.
             Type::SubclassOf(subclass_of_ty) => match subclass_of_ty.subclass_of() {
@@ -1274,6 +1279,9 @@ impl<'db> Type<'db> {
             }
 
             Type::TypeAlias(alias) => alias.value_type(db).into_callable(db),
+            Type::GenericAlias(GenericAlias::TypeAlias(alias)) => {
+                alias.value_type(db).into_callable(db)
+            }
 
             Type::Never
             | Type::DataclassTransformer(_)
@@ -1412,6 +1420,19 @@ impl<'db> Type<'db> {
             (_, Type::TypeAlias(target_alias)) => visitor.visit((self, target), || {
                 self.has_relation_to_impl(db, target_alias.value_type(db), relation, visitor)
             }),
+
+            (Type::GenericAlias(GenericAlias::TypeAlias(self_alias)), _) => {
+                visitor.visit((self, target), || {
+                    self_alias
+                        .value_type(db)
+                        .has_relation_to_impl(db, target, relation, visitor)
+                })
+            }
+
+            (_, Type::GenericAlias(GenericAlias::TypeAlias(target_alias))) => visitor
+                .visit((self, target), || {
+                    self.has_relation_to_impl(db, target_alias.value_type(db), relation, visitor)
+                }),
 
             // Pretend that instances of `dataclasses.Field` are assignable to their default type.
             // This allows field definitions like `name: str = field(default="")` in dataclasses
@@ -1714,7 +1735,10 @@ impl<'db> Type<'db> {
                     )
                 })
                 .unwrap_or_else(|| C::from_bool(db, relation.is_assignability())),
-            (Type::GenericAlias(alias), Type::SubclassOf(target_subclass_ty)) => target_subclass_ty
+            (
+                Type::GenericAlias(GenericAlias::ClassLiteral(alias)),
+                Type::SubclassOf(target_subclass_ty),
+            ) => target_subclass_ty
                 .subclass_of()
                 .into_class()
                 .map(|subclass_of_class| {
@@ -1738,7 +1762,7 @@ impl<'db> Type<'db> {
             (Type::ClassLiteral(class), _) => class
                 .metaclass_instance_type(db)
                 .has_relation_to_impl(db, target, relation, visitor),
-            (Type::GenericAlias(alias), _) => ClassType::from(alias)
+            (Type::GenericAlias(GenericAlias::ClassLiteral(alias)), _) => ClassType::from(alias)
                 .metaclass_instance_type(db)
                 .has_relation_to_impl(db, target, relation, visitor),
 
@@ -2245,15 +2269,19 @@ impl<'db> Type<'db> {
                 }
             }
 
-            (Type::SubclassOf(subclass_of_ty), Type::GenericAlias(alias_b))
-            | (Type::GenericAlias(alias_b), Type::SubclassOf(subclass_of_ty)) => {
-                match subclass_of_ty.subclass_of() {
-                    SubclassOfInner::Dynamic(_) => C::unsatisfiable(db),
-                    SubclassOfInner::Class(class_a) => ClassType::from(alias_b)
-                        .when_subclass_of::<C>(db, class_a)
-                        .negate(db),
-                }
-            }
+            (
+                Type::SubclassOf(subclass_of_ty),
+                Type::GenericAlias(GenericAlias::ClassLiteral(alias_b)),
+            )
+            | (
+                Type::GenericAlias(GenericAlias::ClassLiteral(alias_b)),
+                Type::SubclassOf(subclass_of_ty),
+            ) => match subclass_of_ty.subclass_of() {
+                SubclassOfInner::Dynamic(_) => C::unsatisfiable(db),
+                SubclassOfInner::Class(class_a) => ClassType::from(alias_b)
+                    .when_subclass_of::<C>(db, class_a)
+                    .negate(db),
+            },
 
             (Type::SubclassOf(left), Type::SubclassOf(right)) => {
                 left.is_disjoint_from_impl(db, right, visitor)
@@ -2345,13 +2373,17 @@ impl<'db> Type<'db> {
                 .metaclass_instance_type(db)
                 .when_subtype_of::<C>(db, instance)
                 .negate(db),
-            (Type::GenericAlias(alias), instance @ Type::NominalInstance(_))
-            | (instance @ Type::NominalInstance(_), Type::GenericAlias(alias)) => {
-                ClassType::from(alias)
-                    .metaclass_instance_type(db)
-                    .when_subtype_of::<C>(db, instance)
-                    .negate(db)
-            }
+            (
+                Type::GenericAlias(GenericAlias::ClassLiteral(alias)),
+                instance @ Type::NominalInstance(_),
+            )
+            | (
+                instance @ Type::NominalInstance(_),
+                Type::GenericAlias(GenericAlias::ClassLiteral(alias)),
+            ) => ClassType::from(alias)
+                .metaclass_instance_type(db)
+                .when_subtype_of::<C>(db, instance)
+                .negate(db),
 
             (Type::FunctionLiteral(..), Type::NominalInstance(instance))
             | (Type::NominalInstance(instance), Type::FunctionLiteral(..)) => {
@@ -2749,11 +2781,11 @@ impl<'db> Type<'db> {
                 }
             }
 
-            Type::GenericAlias(alias) if alias.is_typed_dict(db) => {
+            Type::GenericAlias(GenericAlias::ClassLiteral(alias)) if alias.is_typed_dict(db) => {
                 Some(alias.origin(db).typed_dict_member(db, None, name, policy))
             }
 
-            Type::GenericAlias(alias) => {
+            Type::GenericAlias(GenericAlias::ClassLiteral(alias)) => {
                 Some(ClassType::from(*alias).class_member(db, name, policy))
             }
 
@@ -3785,7 +3817,7 @@ impl<'db> Type<'db> {
             Type::ClassLiteral(class) => class
                 .metaclass_instance_type(db)
                 .try_bool_impl(db, allow_short_circuit)?,
-            Type::GenericAlias(alias) => ClassType::from(*alias)
+            Type::GenericAlias(GenericAlias::ClassLiteral(alias)) => ClassType::from(*alias)
                 .metaclass_instance_type(db)
                 .try_bool_impl(db, allow_short_circuit)?,
 
@@ -3835,7 +3867,11 @@ impl<'db> Type<'db> {
             Type::BooleanLiteral(bool) => Truthiness::from(*bool),
             Type::StringLiteral(str) => Truthiness::from(!str.value(db).is_empty()),
             Type::BytesLiteral(bytes) => Truthiness::from(!bytes.value(db).is_empty()),
+
             Type::TypeAlias(alias) => alias
+                .value_type(db)
+                .try_bool_impl(db, allow_short_circuit)?,
+            Type::GenericAlias(GenericAlias::TypeAlias(alias)) => alias
                 .value_type(db)
                 .try_bool_impl(db, allow_short_circuit)?,
         };
@@ -4967,7 +5003,7 @@ impl<'db> Type<'db> {
 
         let special_case = match self {
             Type::NominalInstance(nominal) => nominal.tuple_spec(db),
-            Type::GenericAlias(alias) if alias.origin(db).is_tuple(db) => {
+            Type::GenericAlias(GenericAlias::ClassLiteral(alias)) if alias.origin(db).is_tuple(db) => {
                 Some(Cow::Owned(TupleSpec::homogeneous(todo_type!(
                     "*tuple[] annotations"
                 ))))
@@ -5472,7 +5508,9 @@ impl<'db> Type<'db> {
         match self {
             Type::Dynamic(_) | Type::Never => Some(self),
             Type::ClassLiteral(class) => Some(Type::instance(db, class.default_specialization(db))),
-            Type::GenericAlias(alias) => Some(Type::instance(db, ClassType::from(alias))),
+            Type::GenericAlias(GenericAlias::ClassLiteral(alias)) => {
+                Some(Type::instance(db, ClassType::from(alias)))
+            }
             Type::SubclassOf(subclass_of_ty) => Some(subclass_of_ty.to_instance(db)),
             Type::Union(union) => union.to_instance(db),
             // If there is no bound or constraints on a typevar `T`, `T: object` implicitly, which
@@ -5483,6 +5521,9 @@ impl<'db> Type<'db> {
             }
             Type::TypeVar(bound_typevar) => Some(Type::TypeVar(bound_typevar.to_instance(db)?)),
             Type::TypeAlias(alias) => alias.value_type(db).to_instance(db),
+            Type::GenericAlias(GenericAlias::TypeAlias(alias)) => {
+                alias.value_type(db).to_instance(db)
+            }
             Type::Intersection(_) => Some(todo_type!("Type::Intersection.to_instance")),
             Type::BooleanLiteral(_)
             | Type::BytesLiteral(_)
@@ -5551,8 +5592,15 @@ impl<'db> Type<'db> {
                 };
                 Ok(ty)
             }
-            Type::GenericAlias(alias) if alias.is_typed_dict(db) => Ok(Type::typed_dict(*alias)),
-            Type::GenericAlias(alias) => Ok(Type::instance(db, ClassType::from(*alias))),
+            Type::GenericAlias(GenericAlias::ClassLiteral(alias)) if alias.is_typed_dict(db) => {
+                Ok(Type::typed_dict(*alias))
+            }
+            Type::GenericAlias(GenericAlias::ClassLiteral(alias)) => {
+                Ok(Type::instance(db, ClassType::from(*alias)))
+            }
+            Type::GenericAlias(GenericAlias::TypeAlias(alias)) => {
+                Ok(Type::TypeAlias(TypeAliasType::PEP695(alias.origin(db))))
+            }
 
             Type::SubclassOf(_)
             | Type::BooleanLiteral(_)
@@ -5880,7 +5928,9 @@ impl<'db> Type<'db> {
             Type::TypeVar(_) => KnownClass::Type.to_instance(db),
 
             Type::ClassLiteral(class) => class.metaclass(db),
-            Type::GenericAlias(alias) => ClassType::from(alias).metaclass(db),
+            Type::GenericAlias(GenericAlias::ClassLiteral(alias)) => {
+                ClassType::from(alias).metaclass(db)
+            }
             Type::SubclassOf(subclass_of_ty) => match subclass_of_ty.subclass_of() {
                 SubclassOfInner::Dynamic(_) => self,
                 SubclassOfInner::Class(class) => SubclassOfType::from(
@@ -5903,6 +5953,9 @@ impl<'db> Type<'db> {
             Type::ProtocolInstance(protocol) => protocol.to_meta_type(db),
             Type::TypedDict(typed_dict) => SubclassOfType::from(db, typed_dict.defining_class()),
             Type::TypeAlias(alias) => alias.value_type(db).to_meta_type(db),
+            Type::GenericAlias(GenericAlias::TypeAlias(alias)) => {
+                alias.value_type(db).to_meta_type(db)
+            }
         }
     }
 
@@ -6448,7 +6501,10 @@ impl<'db> Type<'db> {
 
     pub(crate) fn generic_origin(self, db: &'db dyn Db) -> Option<ClassLiteral<'db>> {
         match self {
-            Type::GenericAlias(generic) => Some(generic.origin(db)),
+            Type::GenericAlias(GenericAlias::ClassLiteral(generic)) => Some(generic.origin(db)),
+            Type::GenericAlias(GenericAlias::TypeAlias(alias)) => {
+                alias.value_type(db).generic_origin(db)
+            }
             Type::NominalInstance(instance) => {
                 if let ClassType::Generic(generic) = instance.class(db) {
                     Some(generic.origin(db))
@@ -6494,7 +6550,9 @@ impl<'db> VarianceInferable<'db> for Type<'db> {
             Type::NominalInstance(nominal_instance_type) => {
                 nominal_instance_type.variance_of(db, typevar)
             }
-            Type::GenericAlias(generic_alias) => generic_alias.variance_of(db, typevar),
+            Type::GenericAlias(GenericAlias::ClassLiteral(generic_alias)) => {
+                generic_alias.variance_of(db, typevar)
+            }
             Type::Callable(callable_type) => callable_type.signatures(db).variance_of(db, typevar),
             Type::TypeVar(other_typevar) | Type::NonInferableTypeVar(other_typevar)
                 if other_typevar == typevar =>
@@ -6548,7 +6606,8 @@ impl<'db> VarianceInferable<'db> for Type<'db> {
             | Type::NonInferableTypeVar(_)
             | Type::TypeIs(_)
             | Type::TypedDict(_)
-            | Type::TypeAlias(_) => TypeVarVariance::Bivariant,
+            | Type::TypeAlias(_)
+            | Type::GenericAlias(GenericAlias::TypeAlias(_)) => TypeVarVariance::Bivariant,
         };
 
         tracing::debug!(
@@ -9204,8 +9263,6 @@ pub struct PEP695TypeAliasType<'db> {
     pub name: ast::name::Name,
 
     rhs_scope: ScopeId<'db>,
-
-    specialization: Option<Specialization<'db>>,
 }
 
 // The Salsa heap is tracked separately.
@@ -9237,25 +9294,23 @@ impl<'db> PEP695TypeAliasType<'db> {
         let definition = self.definition(db);
 
         definition_expression_type(db, definition, &type_alias_stmt_node.value)
-            .apply_optional_specialization(db, self.specialization(db))
     }
 
     pub(crate) fn apply_specialization(
         self,
         db: &'db dyn Db,
         f: impl FnOnce(GenericContext<'db>) -> Specialization<'db>,
-    ) -> TypeAliasType<'db> {
+    ) -> Type<'db> {
         match self.generic_context(db) {
-            None => TypeAliasType::PEP695(self),
+            None => Type::TypeAlias(TypeAliasType::PEP695(self)),
 
             Some(generic_context) => {
                 let specialization = f(generic_context);
-                TypeAliasType::PEP695(PEP695TypeAliasType::new(
+                Type::GenericAlias(GenericAlias::TypeAlias(GenericTypeAliasAlias::new(
                     db,
-                    self.name(db),
-                    self.rhs_scope(db),
-                    Some(specialization),
-                ))
+                    self,
+                    specialization,
+                )))
             }
         }
     }
@@ -10121,7 +10176,9 @@ impl<'db> BoundSuperType<'db> {
         //   but are valid as pivot classes, e.g. unsubscripted `typing.Generic`
         let pivot_class = match pivot_class_type {
             Type::ClassLiteral(class) => ClassBase::Class(ClassType::NonGeneric(class)),
-            Type::GenericAlias(class) => ClassBase::Class(ClassType::Generic(class)),
+            Type::GenericAlias(GenericAlias::ClassLiteral(class)) => {
+                ClassBase::Class(ClassType::Generic(class))
+            }
             Type::SubclassOf(subclass_of) if subclass_of.subclass_of().is_dynamic() => {
                 ClassBase::Dynamic(
                     subclass_of

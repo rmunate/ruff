@@ -6,8 +6,8 @@ use crate::types::constraints::Constraints;
 use crate::types::variance::VarianceInferable;
 use crate::types::{
     ApplyTypeMappingVisitor, BindingContext, BoundTypeVarInstance, ClassType, DynamicType,
-    HasRelationToVisitor, IsDisjointVisitor, KnownClass, MemberLookupPolicy, NormalizedVisitor,
-    SpecialFormType, Type, TypeMapping, TypeRelation, TypeVarInstance,
+    GenericAlias, HasRelationToVisitor, IsDisjointVisitor, KnownClass, MemberLookupPolicy,
+    NormalizedVisitor, SpecialFormType, Type, TypeMapping, TypeRelation, TypeVarInstance,
 };
 use crate::{Db, FxOrderSet};
 
@@ -285,7 +285,9 @@ impl<'db> SubclassOfInner<'db> {
         match ty {
             Type::Dynamic(dynamic) => Some(Self::Dynamic(dynamic)),
             Type::ClassLiteral(literal) => Some(Self::Class(literal.default_specialization(db))),
-            Type::GenericAlias(generic) => Some(Self::Class(ClassType::Generic(generic))),
+            Type::GenericAlias(GenericAlias::ClassLiteral(generic)) => {
+                Some(Self::Class(ClassType::Generic(generic)))
+            }
             Type::SpecialForm(SpecialFormType::Any) => Some(Self::Dynamic(DynamicType::Any)),
             _ => None,
         }
